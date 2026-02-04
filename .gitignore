@@ -1,0 +1,38 @@
+# Keil uVision / ARM
+MDK-ARM/Objects/
+MDK-ARM/Listing/
+*.uvoptx
+*.uvgui*
+*.uvopt
+*.lnk
+*.tmp
+*.bak
+*.dep
+*.d
+*.o
+*.a
+*.axf
+*.elf
+*.map
+*.hex
+*.bin
+*.lst
+*.obj
+*.cof
+*.htm
+*.crf
+*.sct
+
+# CubeMX / IDEs
+*.launch
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.user
+
+# Build folders
+build/
+Debug/
+Release/
