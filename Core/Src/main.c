@@ -22,6 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "mavlink_task.h"
 
 /* USER CODE END Includes */
 
@@ -63,7 +64,7 @@ const osThreadAttr_t SensorTask_attributes = {
 osThreadId_t MavlinkTaskHandle;
 const osThreadAttr_t MavlinkTask_attributes = {
   .name = "MavlinkTask",
-  .stack_size = 128 * 4,
+  .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
 /* Definitions for ReleaseTask */
@@ -185,6 +186,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
   }
   /* USER CODE END 3 */
 }
@@ -416,11 +418,7 @@ void StartSensorTask(void *argument)
 void StartMavlinkTask(void *argument)
 {
   /* USER CODE BEGIN StartMavlinkTask */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+  MavlinkTask_Run();
   /* USER CODE END StartMavlinkTask */
 }
 
