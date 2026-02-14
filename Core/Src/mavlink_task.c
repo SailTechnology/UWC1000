@@ -4,6 +4,22 @@
 #include <string.h>
 #include <stdbool.h>
 
+/* ========================= 任务与链路说明 =========================
+ * MavlinkTask 职责：
+ * 1) 通过 USART1 接收飞控 MAVLink 数据，完成协议解析与关键状态提取。
+ * 2) 周期发送心跳与指令（COMMAND_LONG / STATUSTEXT）维持链路与控制能力。
+ * 3) 将飞控遥测缓存到 g_telemetry，供系统其它模块读取。
+ * 4) 维护一组调试统计量（CRC失败、未知消息、心跳侦测结果等）。
+ *
+ * 串口关系：
+ * - USART1: MAVLink 主链路（与飞控通信）
+ * - USART3: 调试输出口（当前通过 MAVLINK_USART3_OUTPUT_ENABLE 控制开关）
+ *
+ * 并发模型：
+ * - UART中断只负责把字节推进环形缓冲。
+ * - 任务线程在 for(;;) 中消费环形缓冲并解析帧，避免在中断中做重活。
+ * =============================================================== */
+
 #define MAVLINK_STX_V1 0xFEu
 #define MAVLINK_STX_V2 0xFDu
 #define MAVLINK_IFLAG_SIGNED 0x01u
@@ -176,6 +192,8 @@ static volatile uint32_t g_hb2_bad = 0u;
 static char g_dbg_line[320];
 static char g_fc_line[160];
 
+/* 统一管理串口3输出开关。
+ * 关闭后，MAVLink 相关的调试文本都不会占用串口3带宽。 */
 static void mavlink_usart3_write(const uint8_t *data, uint16_t len)
 {
   if (MAVLINK_USART3_OUTPUT_ENABLE == 0u || data == NULL || len == 0u) {
@@ -200,6 +218,7 @@ typedef struct {
 
 static void mavlink_parser_reset(MavlinkParser *parser)
 {
+  /* 解析状态机复位：用于超限、异常帧或单帧解析完成后回到初始态 */
   parser->magic = 0u;
   parser->index = 0u;
   parser->expected_len = 0u;
@@ -207,7 +226,7 @@ static void mavlink_parser_reset(MavlinkParser *parser)
 
 static void mavlink_crc_accumulate(uint8_t data, uint16_t *crc)
 {
-  // MAVLink uses X.25 CRC with 8-bit tmp (wrap-around matters).
+  // MAVLink 使用 X.25 CRC，逐字节累加。
   uint8_t tmp = (uint8_t)(data ^ (uint8_t)(*crc & 0xFFu));
   tmp = (uint8_t)(tmp ^ (uint8_t)(tmp << 4));
   *crc = (*crc >> 8) ^ ((uint16_t)tmp << 8) ^ ((uint16_t)tmp << 3) ^ ((uint16_t)tmp >> 4);
@@ -298,6 +317,7 @@ static bool mavlink_send_message(uint32_t msgid,
                                  uint8_t payload_len,
                                  uint8_t crc_extra)
 {
+  /* 统一发送函数：组包为 MAVLink2 帧并直接经 MAVLINK_UART_HANDLE 发送。 */
   if (payload_len > MAVLINK_MAX_PAYLOAD_LEN) {
     return false;
   }
@@ -332,6 +352,7 @@ static bool mavlink_send_message(uint32_t msgid,
 
 static bool mavlink_send_heartbeat(void)
 {
+  /* 作为地面端/伴随控制器发送心跳，维持路由与链路可见性。 */
   uint8_t payload[9];
   mavlink_put_u32(&payload[0], 0u);
   payload[4] = MAVLINK_MAV_TYPE_GCS;
@@ -348,6 +369,7 @@ static bool mavlink_send_heartbeat(void)
 
 static bool mavlink_send_command_long(const MavlinkCommandLongItem *item)
 {
+  /* COMMAND_LONG 打包函数，外部通过队列投递命令后由任务线程实际发送。 */
   uint8_t payload[33];
   mavlink_put_f32(&payload[0], item->params[0]);
   mavlink_put_f32(&payload[4], item->params[1]);
@@ -369,6 +391,7 @@ static bool mavlink_send_command_long(const MavlinkCommandLongItem *item)
 
 static void mavlink_store_telemetry(const MavlinkTelemetry_t *telemetry)
 {
+  /* 遥测写入统一走互斥，避免读写竞争。 */
   if (g_mavlink_mutex == NULL) {
     return;
   }
@@ -381,6 +404,8 @@ static void mavlink_store_telemetry(const MavlinkTelemetry_t *telemetry)
 
 static bool mavlink_parse_frame(MavlinkParser *parser, MavlinkFrame *frame)
 {
+  /* 对完整缓存帧做二次校验与字段抽取。
+   * 注意：对未知 msgid（无 CRC_EXTRA）不做强校验，但可用于调试统计。 */
   if (parser->magic == MAVLINK_STX_V1) {
     uint8_t payload_len = parser->buffer[0];
     if (payload_len > MAVLINK_MAX_PAYLOAD_LEN) {
@@ -484,6 +509,8 @@ static bool mavlink_parse_frame(MavlinkParser *parser, MavlinkFrame *frame)
 
 static bool mavlink_parse_byte(MavlinkParser *parser, uint8_t byte, MavlinkFrame *frame)
 {
+  /* 流式字节解析状态机：
+   * 先等 STX，再根据 LEN/flags 推导 expected_len，长度满足后转 parse_frame。 */
   if (parser->magic == 0u) {
     if (byte == MAVLINK_STX_V1 || byte == MAVLINK_STX_V2) {
       parser->magic = byte;
@@ -542,6 +569,7 @@ static void mavlink_hb_sniffer_reset(MavlinkHbSniffer *s)
 
 static void mavlink_hb_sniffer_feed(MavlinkHbSniffer *s, uint8_t byte, uint32_t now_ms)
 {
+  /* 快速心跳旁路解析（MAVLink1），用于在主解析异常时仍有链路感知能力。 */
   if (!s->active) {
     if (byte == MAVLINK_STX_V1) {
       s->active = true;
@@ -616,6 +644,7 @@ static void mavlink_hb_sniffer_v2_reset(MavlinkHbSnifferV2 *s)
 
 static void mavlink_hb_sniffer_v2_feed(MavlinkHbSnifferV2 *s, uint8_t byte, uint32_t now_ms)
 {
+  /* MAVLink2 心跳旁路解析，补充主解析器统计与链路状态。 */
   if (!s->active) {
     if (byte == MAVLINK_STX_V2) {
       s->active = true;
@@ -684,6 +713,7 @@ static void mavlink_hb_sniffer_v2_feed(MavlinkHbSnifferV2 *s, uint8_t byte, uint
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
+  /* USART1 中断收包：只做“入环 + 继续挂接下一字节接收”，保持中断轻量。 */
   if (huart == NULL || huart->Instance != USART1) {
     return;
   }
@@ -703,6 +733,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
+  /* UART错误恢复：清 ORE 并重启中断接收，降低长期卡死风险。 */
   if (huart == NULL || huart->Instance != USART1) {
     return;
   }
@@ -714,6 +745,9 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 
 static void mavlink_handle_frame(const MavlinkFrame *frame, uint32_t now_ms)
 {
+  /* 已解析帧分发：
+   * - HEARTBEAT: 更新 sysid/compid、模式、链路状态
+   * - SYS_STATUS/ATTITUDE/GLOBAL_POSITION_INT/COMMAND_ACK: 更新对应遥测字段 */
   // Keep target IDs updated even if we can't validate CRC for some dialect-specific messages.
   if (frame->sysid != 0u && frame->sysid != g_local_sysid) {
     g_target_sysid = frame->sysid;
@@ -816,6 +850,7 @@ static void mavlink_handle_frame(const MavlinkFrame *frame, uint32_t now_ms)
 
 static void mavlink_task_init(void)
 {
+  /* 任务级资源初始化：互斥、发送队列、RX中断启动 */
   if (g_mavlink_mutex == NULL) {
     osMutexAttr_t attr = { .name = "mavlinkMutex" };
     g_mavlink_mutex = osMutexNew(&attr);
@@ -837,6 +872,11 @@ static void mavlink_task_init(void)
 
 void MavlinkTask_Run(void)
 {
+  /* 主循环节拍：
+   * 1) 周期发心跳/状态文本
+   * 2) 处理待发命令队列
+   * 3) 消费环形缓冲并解析MAVLink
+   * 4) 输出调试统计与飞控状态（受串口3开关控制） */
   mavlink_task_init();
 
   mavlink_parser_reset(&g_parser);
@@ -1062,6 +1102,7 @@ void MavlinkTask_Run(void)
 
 bool Mavlink_GetTelemetry(MavlinkTelemetry_t *out)
 {
+  /* 对外提供线程安全读取。 */
   if (out == NULL || g_mavlink_mutex == NULL) {
     return false;
   }
@@ -1085,6 +1126,7 @@ bool Mavlink_SendCommandLong(uint16_t command,
                              uint8_t target_component,
                              uint8_t confirmation)
 {
+  /* 外部命令入队；真正发送在 MavlinkTask_Run 内执行。 */
   if (g_mavlink_tx_queue == NULL) {
     return false;
   }
@@ -1107,6 +1149,7 @@ bool Mavlink_SendCommandLong(uint16_t command,
 
 bool Mavlink_RequestMessageInterval(uint32_t message_id, uint32_t interval_us)
 {
+  /* 通过 MAV_CMD_SET_MESSAGE_INTERVAL 请求飞控调整消息频率。 */
   float msg_id = (float)message_id;
   float interval = (float)interval_us;
   return Mavlink_SendCommandLong(MAV_CMD_SET_MESSAGE_INTERVAL,
@@ -1124,6 +1167,7 @@ bool Mavlink_RequestMessageInterval(uint32_t message_id, uint32_t interval_us)
 
 bool Mavlink_SendStatustext(const char *text, uint8_t severity)
 {
+  /* 发送文本状态到飞控/地面端，长度按 MAVLink 50 字节字段截断。 */
   if (text == NULL) {
     return false;
   }
