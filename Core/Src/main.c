@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "mavlink_task.h"
+#include "sensor_task.h"
 
 /* USER CODE END Includes */
 
@@ -57,7 +58,7 @@ const osThreadAttr_t defaultTask_attributes = {
 osThreadId_t SensorTaskHandle;
 const osThreadAttr_t SensorTask_attributes = {
   .name = "SensorTask",
-  .stack_size = 128 * 4,
+  .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
 /* Definitions for MavlinkTask */
@@ -286,7 +287,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  huart2.Init.BaudRate = 9600;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -400,11 +401,7 @@ void StartDefaultTask(void *argument)
 void StartSensorTask(void *argument)
 {
   /* USER CODE BEGIN StartSensorTask */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+  SensorTask_Run();
   /* USER CODE END StartSensorTask */
 }
 

@@ -1,6 +1,7 @@
 --cpu=Cortex-M4.fp
 "uwc1000\startup_stm32f405xx.o"
 "uwc1000\mavlink_task.o"
+"uwc1000\sensor_task.o"
 "uwc1000\main.o"
 "uwc1000\freertos.o"
 "uwc1000\stm32f4xx_it.o"

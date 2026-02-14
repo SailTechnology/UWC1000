@@ -53,6 +53,7 @@
 #define MAVLINK_DEBUG_BRIDGE_TIMEOUT_MS 10u
 #define MAVLINK_DEBUG_MSGID_ASCII 1u
 #define MAVLINK_DEBUG_PRINT_UNKNOWN_FRAMES 0u
+#define MAVLINK_USART3_OUTPUT_ENABLE 0u
 
 #define MAV_MODE_FLAG_SAFETY_ARMED 0x80u
 
@@ -174,6 +175,14 @@ static volatile uint32_t g_hb2_bad = 0u;
 
 static char g_dbg_line[320];
 static char g_fc_line[160];
+
+static void mavlink_usart3_write(const uint8_t *data, uint16_t len)
+{
+  if (MAVLINK_USART3_OUTPUT_ENABLE == 0u || data == NULL || len == 0u) {
+    return;
+  }
+  (void)HAL_UART_Transmit(&huart3, (uint8_t *)data, len, MAVLINK_DEBUG_BRIDGE_TIMEOUT_MS);
+}
 
 typedef struct {
   uint8_t buf[32];
@@ -730,7 +739,7 @@ static void mavlink_handle_frame(const MavlinkFrame *frame, uint32_t now_ms)
     }
 
     if (tag != NULL) {
-      (void)HAL_UART_Transmit(&huart3, (uint8_t *)tag, (uint16_t)strlen(tag), MAVLINK_DEBUG_BRIDGE_TIMEOUT_MS);
+      mavlink_usart3_write((const uint8_t *)tag, (uint16_t)strlen(tag));
     }
   }
 
@@ -820,10 +829,7 @@ static void mavlink_task_init(void)
   memset(&g_telemetry, 0, sizeof(g_telemetry));
 
   const char *banner = "MAVTASK\r\n";
-  (void)HAL_UART_Transmit(&huart3,
-                          (uint8_t *)banner,
-                          (uint16_t)strlen(banner),
-                          MAVLINK_DEBUG_BRIDGE_TIMEOUT_MS);
+  mavlink_usart3_write((const uint8_t *)banner, (uint16_t)strlen(banner));
 
   // Start interrupt-driven RX so we don't drop bytes during TX or RTOS delays.
   (void)HAL_UART_Receive_IT(MAVLINK_UART_HANDLE, &g_rx_it_byte, 1u);
@@ -889,7 +895,7 @@ void MavlinkTask_Run(void)
       }
 
       if (MAVLINK_DEBUG_BRIDGE != 0u) {
-        (void)HAL_UART_Transmit(&huart3, &byte, 1u, MAVLINK_DEBUG_BRIDGE_TIMEOUT_MS);
+        mavlink_usart3_write(&byte, 1u);
       }
 
       MavlinkFrame frame;
@@ -1017,10 +1023,7 @@ void MavlinkTask_Run(void)
             g_dbg_line[sizeof(g_dbg_line) - 1u] = '\0';
           }
         }
-        (void)HAL_UART_Transmit(&huart3,
-                                (uint8_t *)g_dbg_line,
-                                (uint16_t)strlen(g_dbg_line),
-                                MAVLINK_DEBUG_BRIDGE_TIMEOUT_MS);
+        mavlink_usart3_write((const uint8_t *)g_dbg_line, (uint16_t)strlen(g_dbg_line));
       }
       last_rx_bytes = rx;
       last_rx_watchdog = now;
@@ -1045,16 +1048,10 @@ void MavlinkTask_Run(void)
                        (unsigned)t.base_mode,
                        (unsigned long)t.custom_mode,
                        mode_name);
-        (void)HAL_UART_Transmit(&huart3,
-                                (uint8_t *)g_fc_line,
-                                (uint16_t)strlen(g_fc_line),
-                                MAVLINK_DEBUG_BRIDGE_TIMEOUT_MS);
+        mavlink_usart3_write((const uint8_t *)g_fc_line, (uint16_t)strlen(g_fc_line));
       } else {
         const char *s = "FC: no heartbeat\r\n";
-        (void)HAL_UART_Transmit(&huart3,
-                                (uint8_t *)s,
-                                (uint16_t)strlen(s),
-                                MAVLINK_DEBUG_BRIDGE_TIMEOUT_MS);
+        mavlink_usart3_write((const uint8_t *)s, (uint16_t)strlen(s));
       }
       last_fc_status = now;
     }
